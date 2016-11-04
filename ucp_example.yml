@@ -1,0 +1,131 @@
+---
+# tasks file for role.ansible.ucp
+# - name: reading the fact file from host
+#   become: yes 
+#   include_vars:
+#     file: /etc/ansible/facts.d/aws.fact
+#     name: host_fact
+
+# - name: Gather EC2 instance metadata
+#   action: ec2_metadata_facts
+
+# - name: Obtain EC2 tags for this instance
+#   action:
+#     module: ec2_tag
+#     region: "{{ ansible_ec2_placement_region }}"
+#     resource: "{{ ansible_ec2_instance_id }}"
+#     state: list
+#   register: ec2_tags
+
+
+- block:
+    - name: geting the raw 
+      shell: lsblk --output NAME |  tail -n 1
+      register: raw_disk
+    
+    - name: remove key docker daemon files
+      debug:
+        msg: "triggering the handelers"
+      notify: rm docker files
+    - meta: flush_handlers
+    
+    - name: create file system
+      become: yes
+      filesystem:
+        fstype: xfs
+        dev: /dev/{{ raw_disk.stdout }}
+    
+    - name: mounting filesystem 
+      become: yes
+      mount:
+        path: /var/lib/docker/volumes
+        src: /dev/{{ raw_disk.stdout }}
+        fstype: xfs
+        state: mounted
+      notify: start docker
+
+    - name: setting up the hostname
+      become: yes
+      hostname:
+        name: "{{ ansible_local.aws.tags['host_type']  + '.' + domain_name }}"
+
+    - name: download ucp images
+      get_url:
+        url: http://example.com/artifactory/docker/ucp/ucp-{{ ansible_local.aws.tags['version'] }}.tar.gz 
+        dest: /tmp/ucp-{{ ansible_local.aws.tags['version'] }}.tar.gz
+
+    - name: load images to docker daemon
+      docker_image:
+        name: docker/ucp:{{ ansible_local.aws.tags['version'] }}
+        load_path: /tmp/ucp-{{ ansible_local.aws.tags['version'] }}.tar.gz
+    
+    - name: Create a new ucp controller
+      docker_container:
+        name: ucp
+        image: docker/ucp:{{ ansible_local.aws.tags['version'] }}
+        volumes: /var/run/docker.sock:/var/run/docker.sock
+        command: install --host-address {{ ansible_default_ipv4.address }} --external-server-cert --admin-username {{ ucp_username }} --admin-password {{ ucp_password }} --san "{{ ansible_default_ipv4.address }}" --san "{{ ansible_local.aws.tags['application'] + '.' + domain_name }}"
+        cleanup: yes
+        interactive: yes
+      when: ucp_state == "new" and ansible_local.aws.tags['ucp_type'] == "manager"
+
+    - block:
+        - name: getting the latest backup name 
+          #local_action: curl -s -o /tmp/tmp.html http://example.com/DTR_UCP_BACKUP/?C=M;O=D && cat /tmp/tmp.html | tail -4 | head -1 | awk '{print $2}' | cut -d "\"" -f 2
+          shell: curl -s -o /tmp/tmp.html http://example.com/?C=M;O=D && cat /tmp/tmp.html | tail -4 | head -1 | awk '{print $2}' | cut -d "\"" -f 2
+          register: ucp_backup_name
+          when: ucp_backup_name == None
+
+        - name: downloading latest ucp backup from drops
+          get_url:
+            url: http://drops.example.com/DTR_UCP_BACKUP/{{ ucp_backup_name if ucp_backup_name == None else ucp_backup_name.stdout }}
+            dest: /tmp/{{ ucp_backup_name.stdout }}
+       #  when: ucp_backup_name == "" and ucp_state == "restore"
+    
+        - name: restoring backup from exiting ucp controller
+          docker_container:
+            interactive: "yes"
+            name: ucp
+            image: docker/ucp:{{ ansible_local.aws.tags['version'] }}
+            volumes: /var/run/docker.sock:/var/run/docker.sock
+            command: restore -i --host-address {{ ansible_default_ipv4.address }} --san "{{ ansible_default_ipv4.address }}" --san "{{ ansible_local.aws.tags['application'] + '.' + domain_name }}" < /tmp/{{ ucp_backup_name.stdout }}
+            cleanup: "yes"
+            
+      when: ucp_state == "restore" and ansible_local.aws.tags['ucp_type'] == "manager"
+
+    - name: getting the token ucpcontroller
+      shell: docker swarm join-token manager -q
+      register: ucp_manager_token
+      when: ansible_local.aws.tags['ucp_type'] == "manager"
+    
+    - name: getting the token ucp worker
+      shell: docker swarm join-token manager -q
+      register: ucp_worker_token
+      when: ansible_local.aws.tags['ucp_type'] == "manager"
+
+    - name: pushing token to artifactory
+      uri:
+        url: http://{{ artifact_url }}/{{ artifact_repo_name }}/{{ ansible_local.aws.tags['application'] }}/{{ ansible_local.aws.tags['host_type'] }}/{{ ansible_local.aws.tags['version'] }}/{{ ansible_local.aws.tags['ucp_type'] }}/data
+        user: "{{ artifact_username }}"
+        password: "{{ artifact_username }}"
+        body: "{{ dict(manager_token=ucp_manager_token.stdout, worker_token=ucp_worker_token.stdout) }}"
+        body_format: json
+        method: PUT
+      when: ansible_local.aws.tags['ucp_type'] == "manager"
+
+    
+  when: ansible_local.aws.tags['host_type'] == "ucp"
+    
+- name: adding worker to the cluster 
+  shell: docker swarm join --token {{ ucp_manager_token }}
+  when: ansible_local.aws.tags['ucp_type'] == "worker" and ansible_local.aws.tags['host_type'] == "ucp"
+
+- name: adding controller to the cluster 
+  shell: docker swarm join --token {{ ucp_manager_token }}
+  when: ansible_local.aws.tags['ucp_type'] == "controller" and ansible_local.aws.tags['host_type'] == "ucp"
+      
+    
+  
+    
+     
+    

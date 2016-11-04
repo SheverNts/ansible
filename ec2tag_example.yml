@@ -1,0 +1,17 @@
+# tasks file for role.ansible.ucp
+# - name: reading the fact file from host
+#   become: yes 
+#   include_vars:
+#     file: /etc/ansible/facts.d/aws.fact
+#     name: host_fact
+
+# - name: Gather EC2 instance metadata
+#   action: ec2_metadata_facts
+
+# - name: Obtain EC2 tags for this instance
+#   action:
+#     module: ec2_tag
+#     region: "{{ ansible_ec2_placement_region }}"
+#     resource: "{{ ansible_ec2_instance_id }}"
+#     state: list
+#   register: ec2_tags

@@ -1,0 +1,19 @@
+---
+
+- hosts: host
+  tasks:
+  - name: ceating the directry
+    file: path=/root/data state=directory mode=0777
+
+  - name: copy http file 
+    copy: src=/root/ansible/ dest=/root/data/
+
+  - name: nginx
+    docker_container:
+      name: nginx
+      image: nginx
+#      volumes: /root/data/web.conf:/etc/nginx/conf.d/ 
+      volumes: /root/data/:/usr/share/nginx/html/
+      published_ports: 200:80
+      state: started
+      
